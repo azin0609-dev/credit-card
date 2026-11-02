@@ -42,6 +42,12 @@ class MinimumPaymentTests(unittest.TestCase):
         self.assertEqual(minimum_payment(0, 10, 1000 * D), 0)
         self.assertEqual(minimum_payment(-500 * D, 10, 1000 * D), 0)
 
+    def test_full_amount_part_is_paid_in_full(self):
+        # 一般消費 20,000 × 10% + 分期當期 3,000 全額
+        self.assertEqual(minimum_payment(23_000 * D, 10, 1000 * D, 3000 * D), 5000 * D)
+        # 全額部分不會超過應繳總額
+        self.assertEqual(minimum_payment(2000 * D, 10, 1000 * D, 9000 * D), 2000 * D)
+
 
 class SnapshotTests(unittest.TestCase):
     def test_no_records(self):
@@ -166,6 +172,21 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(progress.posted_periods, 2)
         self.assertEqual(progress.next_date, date(2026, 10, 10))
         self.assertFalse(progress.finished)
+
+    def test_installment_period_counts_fully_toward_minimum(self):
+        inst = Installment(
+            card_id=1, start_date=date(2026, 10, 10), total_amount=36_000 * D, periods=12, id=1
+        )
+        stmt = snapshot(txns=[txn(date(2026, 10, 1), 20_000)], insts=[inst]).latest
+        self.assertEqual(stmt.balance, 23_000 * D)
+        # 20,000 × 10% + 分期 3,000
+        self.assertEqual(stmt.min_payment, 5000 * D)
+
+    def test_amount_over_credit_limit_counts_fully_toward_minimum(self):
+        c = card(credit_limit=10_000 * D)
+        stmt = snapshot(c, txns=[txn(date(2026, 10, 1), 12_000)]).latest
+        # 超額 2,000 全額 + 其餘 10,000 × 10%
+        self.assertEqual(stmt.min_payment, 3000 * D)
 
     def test_month_end_statement_day(self):
         c = card(statement_day=31, due_day=15)

@@ -3,8 +3,11 @@
 模型說明
 --------
 * 每期「本期應繳總額」= 上期應繳總額 − 本期週期內的繳款 + 本期週期內的消費（含分期入帳）。
-* 「最低應繳金額」= 應繳總額 × 最低應繳比例（無條件進位到元），且不低於「最低應繳下限」；
-  應繳總額低於下限時須全額繳清。若上一期的最低應繳沒有繳足，差額會累加到本期。
+* 「最低應繳金額」（依台灣多數銀行的規則試算）
+  = 一般消費 × 最低應繳比例（無條件進位到元）
+  + 本期分期入帳金額（100%）+ 超過信用額度的金額（100%）
+  + 上一期未繳足的最低應繳。
+  結果不低於「最低應繳下限」；應繳總額低於下限時須全額繳清。
   各銀行規則不盡相同，建議以 ``stmt set`` 輸入銀行帳單上的實際金額覆蓋試算結果。
 * 某期帳單「已繳金額」= 該期結帳日之後、下一個結帳日（含）之前的繳款。
 
@@ -36,14 +39,21 @@ class StatementStatus(Enum):
     OVERDUE = "逾期"
 
 
-def minimum_payment(balance: int, rate_percent: float, floor: int) -> int:
-    """依比例與下限計算最低應繳金額。"""
+def minimum_payment(
+    balance: int, rate_percent: float, floor: int, full_amount: int = 0
+) -> int:
+    """依比例與下限計算最低應繳金額。
+
+    full_amount 是必須全額繳納的部分（分期當期金額、超過額度的金額），
+    其餘的一般消費才依比例計算。
+    """
     if balance <= 0:
         return 0
     if balance <= floor:
         return balance
-    by_rate = ceil_to_unit(Decimal(balance) * Decimal(str(rate_percent)) / 100)
-    return min(max(by_rate, floor), balance)
+    full = min(max(full_amount, 0), balance)
+    by_rate = ceil_to_unit(Decimal(balance - full) * Decimal(str(rate_percent)) / 100)
+    return min(max(by_rate + full, floor), balance)
 
 
 @dataclass
@@ -153,10 +163,11 @@ def build_snapshot(
 ) -> CardSnapshot:
     sd = card.statement_day
 
-    charges: list[tuple[date, int]] = [(t.date, t.amount) for t in transactions]
-    for inst in installments:
-        charges.extend(inst.schedule())
-    charges = [(d, a) for d, a in charges if d <= today]
+    installment_charges = [
+        (d, a) for inst in installments for d, a in inst.schedule() if d <= today
+    ]
+    charges = [(t.date, t.amount) for t in transactions if t.date <= today]
+    charges += installment_charges
     pays = [(p.date, p.amount) for p in payments if p.date <= today]
     override_map = {o.closing_date: o for o in overrides if o.closing_date < today}
 
@@ -185,7 +196,11 @@ def build_snapshot(
         if override is not None and override.min_payment is not None:
             min_pay = override.min_payment
         elif balance > 0:
-            base = minimum_payment(balance, card.min_payment_rate, card.min_payment_floor)
+            over_limit = max(balance - card.credit_limit, 0) if card.credit_limit else 0
+            full_amount = total(installment_charges, prev_closing, closing) + over_limit
+            base = minimum_payment(
+                balance, card.min_payment_rate, card.min_payment_floor, full_amount
+            )
             min_pay = min(balance, base + unpaid_min)
         else:
             min_pay = 0
