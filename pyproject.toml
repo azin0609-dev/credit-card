@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit-card-manager"
+version = "0.1.0"
+description = "信用卡管理工具：追蹤結帳日、繳款截止日、最低應繳金額與欠款"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+ccm = "creditcard.cli:main"
+
+[tool.setuptools]
+packages = ["creditcard"]

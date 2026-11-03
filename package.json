@@ -1,0 +1,10 @@
+{
+  "name": "credit-card",
+  "private": true,
+  "type": "module",
+  "description": "信用卡管理：手機網頁 App（web/）與命令列工具（creditcard/）",
+  "scripts": {
+    "test": "node --test \"tests/web/*.test.js\"",
+    "serve": "python3 -m http.server 8000 --directory web"
+  }
+}
