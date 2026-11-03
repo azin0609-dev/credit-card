@@ -2,7 +2,7 @@
 // 採「網路優先」：有網路時永遠取得最新版本，沒網路才使用快取。
 // 這裡只快取程式檔案；信用卡資料存在 localStorage，不經過 service worker。
 
-const CACHE = 'credit-card-app-v1';
+const CACHE = 'credit-card-app-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -11,6 +11,7 @@ const ASSETS = [
   './billing.js',
   './calendar.js',
   './store.js',
+  './dino.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',

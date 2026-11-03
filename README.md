@@ -23,7 +23,7 @@
 
 - **每個人的資料只存在自己的手機。** 夫妻、家人打開同一個網址，各自記錄，互相看不到對方的資料。
 - 加到主畫面後就像一般 App，沒有網路也能開啟。
-- 支援深色模式。
+- 玩具恐龍風格的淺色介面：每張卡有自己顏色的小恐龍，表情會隨帳單狀態改變（繳清開心、快到期擔心、逾期驚慌）。
 
 ### 怎麼用
 
@@ -138,6 +138,7 @@ npm test                                   # JavaScript（手機 App）
 | `web/calendar.js` | 行事曆提醒（.ics、Google 日曆連結） |
 | `web/store.js` | 資料儲存（localStorage）與備份檔驗證 |
 | `web/app.js` | 畫面與操作 |
+| `web/dino.js` | 恐龍插圖（SVG） |
 | `web/sw.js`、`web/manifest.webmanifest` | 離線使用與加到主畫面 |
 | `creditcard/billing.py` 等 | 命令列工具（Python） |
 | `tests/` | Python 測試；`tests/web/` 為 JavaScript 測試 |

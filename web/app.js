@@ -19,9 +19,10 @@ import {
   upcomingEvents,
 } from './billing.js';
 import { buildIcs, googleCalendarUrl } from './calendar.js';
+import { cardColorName, cardStyle, dinoSvg, footprintSvg, moodForTone } from './dino.js';
 import * as store from './store.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const CATEGORIES = ['餐飲', '交通', '購物', '生活', '娛樂', '醫療', '旅遊', '其他'];
 const BACKUP_REMIND_DAYS = 30;
 const UI_PREFS_KEY = 'credit-card-ui-v1';
@@ -150,7 +151,11 @@ const chip = ({ text, tone }) => `<span class="chip ${tone}">${esc(text)}</span>
 function header(title, { back = null, sub = '' } = {}) {
   return `
     <header class="page-head">
-      ${back ? `<a class="back" href="${back}" aria-label="返回">‹</a>` : ''}
+      ${
+        back
+          ? `<a class="back" href="${back}" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>`
+          : ''
+      }
       <div>
         <h1>${esc(title)}</h1>
         ${sub ? `<p class="sub">${sub}</p>` : ''}
@@ -208,20 +213,85 @@ function eventText(ev, t) {
   }
 }
 
+const TONE_COLOR = { danger: 'coral', warn: 'butter', info: 'sky' };
+
 function alertList(events, t) {
   return events
     .map((ev) => {
       const { tone, title, sub } = eventText(ev, t);
+      const color = TONE_COLOR[tone] ?? cardColorName(ev.snap.card);
+      const mood = tone === 'muted' ? 'calm' : moodForTone(tone);
       return `<a class="alert ${tone}" href="#/card/${ev.snap.card.id}">
-        <strong>${title}</strong><span>${sub}</span></a>`;
+        <span class="avatar">${dinoSvg({ color, mood, head: true })}</span>
+        <span class="alert-text"><strong>${title}</strong><span>${sub}</span></span></a>`;
     })
     .join('');
+}
+
+/** 首頁小恐龍要說的話：挑最需要注意的一件事。 */
+function helperMessage(snaps, t) {
+  const withStatus = snaps
+    .filter((s) => s.latest)
+    .map((s) => ({ snap: s, s: s.latest, status: statementStatus(s.latest, t) }));
+  const name = (x) => esc(x.snap.card.name);
+
+  const overdue = withStatus.filter((x) => x.status === Status.OVERDUE);
+  if (overdue.length) {
+    return {
+      tone: 'danger',
+      color: 'coral',
+      mood: 'alarmed',
+      title: overdue.length === 1 ? `${name(overdue[0])} 逾期了！` : `有 ${overdue.length} 張卡逾期了！`,
+      sub: '快去繳最低應繳金額，避免影響信用喔',
+    };
+  }
+  const pending = withStatus
+    .filter((x) => x.status === Status.PENDING)
+    .sort((a, b) => (a.s.dueDate < b.s.dueDate ? -1 : 1));
+  if (pending.length) {
+    const x = pending[0];
+    const d = daysBetween(t, x.s.dueDate);
+    const more = pending.length > 1 ? `，另有 ${pending.length - 1} 張待繳` : '';
+    if (d <= 7) {
+      return {
+        tone: 'warn',
+        color: 'butter',
+        mood: 'worried',
+        title: d === 0 ? `${name(x)} 今天要繳款！` : `${name(x)} 還有 ${d} 天要繳款`,
+        sub: `最低 ${money(x.s.minRemaining)}・全額 ${money(x.s.remaining)}${more}`,
+      };
+    }
+    return {
+      tone: 'info',
+      color: 'mint',
+      mood: 'calm',
+      title: `下一筆：${name(x)} ${shortDate(x.s.dueDate)} 截止`,
+      sub: `還有 ${d} 天・全額 ${money(x.s.remaining)}${more}`,
+    };
+  }
+  const minPaid = withStatus.find((x) => x.status === Status.MIN_PAID && t <= x.s.dueDate);
+  if (minPaid) {
+    return {
+      tone: 'info',
+      color: 'sky',
+      mood: 'calm',
+      title: '最低應繳都繳了',
+      sub: `${shortDate(minPaid.s.dueDate)} 前繳清剩餘 ${money(minPaid.s.remaining)} 可以避免循環利息`,
+    };
+  }
+  return {
+    tone: 'ok',
+    color: 'mint',
+    mood: 'happy',
+    title: '目前沒有待繳的帳單',
+    sub: '好棒！記得每次刷卡都來記一筆喔',
+  };
 }
 
 function installHint() {
   if (isStandalone() || readPrefs().hideInstallHint) return '';
   const how = isIOS()
-    ? '用 Safari 開啟本頁，點下方「分享」按鈕 →「加入主畫面」。'
+    ? '用 Safari 開啟本頁，點網址列的「≡」或「⋯」→「分享」→「加入主畫面」（舊版 iOS 直接點下方「分享」按鈕）。'
     : '點瀏覽器選單（⋮）→「安裝應用程式」或「加到主畫面」。';
   return `<div class="banner info">
     <div><strong>建議加到手機主畫面</strong><br>${how}加到主畫面後開啟更快，資料也較不會被瀏覽器清除。</div>
@@ -244,7 +314,7 @@ function viewHome() {
   if (!data.cards.length) {
     return `${banners()}
       <section class="hero">
-        <div class="hero-icon" aria-hidden="true">💳</div>
+        <div class="hero-art">${footprintSvg()}${footprintSvg()}${dinoSvg({ color: 'mint', mood: 'happy', holding: true })}</div>
         <h1>我的信用卡</h1>
         <p>記錄每張卡的結帳日、繳款截止日、最低應繳金額與欠款，到期前提醒你繳費。</p>
         <p class="muted small">資料只存在這支手機，不會上傳到任何地方。家人各自在自己的手機使用，資料互不相通。</p>
@@ -273,24 +343,35 @@ function viewHome() {
             <div><small>最低應繳</small><span class="num">${money(s.minPayment)}</span></div>
             <div><small>繳款截止</small><span>${shortDate(s.dueDate)}</span></div>
           </div>`
-        : `<p class="muted small">尚無已結帳的帳單・${shortDate(snap.nextClosingDate)} 結帳</p>`;
+        : `<p class="tile-empty">尚無已結帳的帳單・${shortDate(snap.nextClosingDate)} 結帳</p>`;
       const foot = [
         `未出帳 <span class="num">${money(snap.unbilledCharges)}</span>`,
         `總欠款 <span class="num">${money(snap.totalDebt)}</span>`,
       ];
       if (c.creditLimit) foot.push(`可用 <span class="num">${money(snap.availableCredit)}</span>`);
-      return `<a class="tile" href="#/card/${c.id}">
-          <div class="tile-head"><span class="tile-name">${esc(cardLabel(c))}</span>${
-            s ? chip(statusInfo(s, t)) : chip({ text: '尚未結帳', tone: 'muted' })
-          }</div>
+      const info = s ? statusInfo(s, t) : { text: '尚未結帳', tone: 'muted' };
+      return `<a class="tile" href="#/card/${c.id}" style="${cardStyle(c)}">
+          <div class="tile-head">
+            <span class="avatar">${dinoSvg({ color: cardColorName(c), mood: moodForTone(info.tone), head: true })}</span>
+            <span class="tile-title">
+              <span class="tile-name">${esc(cardLabel(c))}</span>
+              <span class="tile-sub">每月 ${c.statementDay} 日結帳・${c.dueDay} 日截止</span>
+            </span>
+            ${chip(info)}
+          </div>
           ${body}
           <div class="tile-foot">${foot.join('<span class="dot">・</span>')}</div>
         </a>`;
     })
     .join('');
 
+  const helper = helperMessage(snaps, t);
   return `${banners()}
     ${header('我的信用卡', { sub: `${t}（${'日一二三四五六'[new Date().getDay()]}）` })}
+    <section class="helper">
+      <div class="helper-dino">${dinoSvg({ color: helper.color, mood: helper.mood })}</div>
+      <div class="bubble ${helper.tone}" role="status"><strong>${helper.title}</strong><span>${helper.sub}</span></div>
+    </section>
     ${events.length ? `<section class="alerts">${alertList(events, t)}</section>` : ''}
     <section class="stats">
       <div><small>本期尚需繳清</small><strong class="num">${money(needFull)}</strong></div>
@@ -341,9 +422,11 @@ function viewCard(id) {
         `<a class="btn" href="#/add?type=payment&card=${id}">其他金額</a>`,
       );
     }
+    const info = statusInfo(s, t);
     statementPanel = `
-      <section class="panel">
-        <div class="panel-head"><h2>本期帳單</h2>${chip(statusInfo(s, t))}</div>
+      <section class="panel statement" style="${cardStyle(card)}">
+        <div class="peek">${dinoSvg({ color: cardColorName(card), mood: moodForTone(info.tone) })}</div>
+        <div class="panel-head"><h2>本期帳單</h2>${chip(info)}</div>
         <p class="muted small">${s.closingDate} 結帳（${s.overridden ? '銀行帳單金額' : '程式試算'}）・繳款截止 ${s.dueDate}（${describeDays(s.dueDate, t)}）</p>
         <div class="big-grid">
           <div><small>本期應繳</small><strong class="num">${money(s.balance)}</strong></div>
@@ -356,8 +439,9 @@ function viewCard(id) {
       </section>`;
   } else {
     statementPanel = `
-      <section class="panel">
-        <h2>本期帳單</h2>
+      <section class="panel statement" style="${cardStyle(card)}">
+        <div class="peek">${dinoSvg({ color: cardColorName(card), mood: 'calm' })}</div>
+        <div class="panel-head"><h2>本期帳單</h2></div>
         <p class="muted">還沒有已結帳的帳單。下次結帳日 ${snap.nextClosingDate}（${describeDays(snap.nextClosingDate, t)}）。</p>
         <a class="btn block" href="#/stmt/${id}/${lastClosedBefore(t, card.statementDay)}">已經有未繳的帳單？輸入最近一期帳單</a>
       </section>`;
@@ -709,7 +793,7 @@ function viewSettings() {
     </section>
     <section class="panel">
       <h2>加到主畫面</h2>
-      <p class="small"><strong>iPhone：</strong>用 Safari 開啟本網站 → 點「分享」→「加入主畫面」。<br>
+      <p class="small"><strong>iPhone：</strong>用 Safari 開啟本網站 → 點網址列的「≡」或「⋯」→「分享」→「加入主畫面」（舊版 iOS 直接點下方「分享」按鈕）。<br>
       <strong>Android：</strong>用 Chrome 開啟 → 右上角選單 ⋮ →「安裝應用程式」或「加到主畫面」。</p>
       <p class="small muted">每個人在自己的手機上安裝、各自記錄，資料不會互相看到。</p>
     </section>
