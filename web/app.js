@@ -22,10 +22,12 @@ import { buildIcs, googleCalendarUrl } from './calendar.js';
 import { cardColorName, cardStyle, dinoSvg, footprintSvg, moodForTone } from './dino.js';
 import * as store from './store.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const CATEGORIES = ['餐飲', '交通', '購物', '生活', '娛樂', '醫療', '旅遊', '其他'];
 const BACKUP_REMIND_DAYS = 30;
 const UI_PREFS_KEY = 'credit-card-ui-v1';
+const DRAFTS_KEY = 'credit-card-drafts-v1';
+const DRAFT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 const appEl = document.getElementById('app');
 const navEl = document.getElementById('nav');
@@ -69,6 +71,81 @@ function writePrefs(patch) {
   }
 }
 
+// ---------------------------------------------------------------- 表單草稿
+// 填到一半跳去別的頁面（或切到別的 App）再回來，內容會自動恢復；儲存成功後才清除。
+let submittingDraftKey = null;
+
+function readDrafts() {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function writeDrafts(drafts) {
+  try {
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+  } catch {
+    /* 無法儲存草稿不影響使用 */
+  }
+}
+
+function formValues(form) {
+  const values = {};
+  for (const el of form.elements) {
+    if (!el.name || el.type === 'submit' || el.type === 'button' || el.hasAttribute('data-nav-stmt')) continue;
+    values[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  return values;
+}
+
+function saveDraft(form) {
+  const key = form.dataset.draft;
+  if (!key) return;
+  const drafts = readDrafts();
+  drafts[key] = { savedAt: Date.now(), values: formValues(form) };
+  writeDrafts(drafts);
+}
+
+function clearDraft(key) {
+  const drafts = readDrafts();
+  if (key in drafts) {
+    delete drafts[key];
+    writeDrafts(drafts);
+  }
+}
+
+/** 把草稿填回表單；有恢復內容時在表單上方顯示提示。 */
+function restoreDraft(form) {
+  const key = form.dataset.draft;
+  const draft = readDrafts()[key];
+  if (!draft?.values) return;
+  if (Date.now() - (draft.savedAt || 0) > DRAFT_TTL_MS) {
+    clearDraft(key);
+    return;
+  }
+  // 從某張卡片頁點進來「記一筆」時，只恢復同一張卡的草稿
+  const lockedCard = form.dataset.draftCard;
+  if (lockedCard && draft.values.cardId && draft.values.cardId !== lockedCard) return;
+  const initial = formValues(form);
+  const differs = Object.entries(draft.values).some(([k, v]) => k in initial && initial[k] !== v);
+  if (!differs) return;
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in draft.values) || el.hasAttribute('data-nav-stmt')) continue;
+    const v = draft.values[el.name];
+    if (el.type === 'checkbox') el.checked = Boolean(v);
+    else if (el.tagName === 'SELECT') {
+      if ([...el.options].some((o) => o.value === v)) el.value = v;
+    } else el.value = v;
+  }
+  form.insertAdjacentHTML(
+    'afterbegin',
+    `<div class="draft-note" role="status"><span>已恢復你上次還沒儲存的內容</span>
+      <button type="button" class="link" data-action="discard-draft" data-key="${esc(key)}">清除重填</button></div>`,
+  );
+}
+
 const isStandalone = () =>
   window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
 const isIOS = () =>
@@ -108,6 +185,7 @@ function commit(mutate, message, nextHash) {
     toast(err.message, 'error');
     return false;
   }
+  if (submittingDraftKey) clearDraft(submittingDraftKey);
   if (message) toast(message);
   if (nextHash && location.hash !== nextHash) location.hash = nextHash;
   else render();
@@ -443,7 +521,8 @@ function viewCard(id) {
         <div class="peek">${dinoSvg({ color: cardColorName(card), mood: 'calm' })}</div>
         <div class="panel-head"><h2>本期帳單</h2></div>
         <p class="muted">還沒有已結帳的帳單。下次結帳日 ${snap.nextClosingDate}（${describeDays(snap.nextClosingDate, t)}）。</p>
-        <a class="btn block" href="#/stmt/${id}/${lastClosedBefore(t, card.statementDay)}">已經有未繳的帳單？輸入最近一期帳單</a>
+        <a class="btn block" href="#/stmt/${id}/${lastClosedBefore(t, card.statementDay)}">已經收到銀行帳單？輸入帳單金額</a>
+        <p class="hint">只有銀行已經寄來、還沒繳的帳單才需要輸入。結帳日之後的新消費請用「記一筆」，會自動算到下一期。</p>
       </section>`;
   }
 
@@ -587,7 +666,7 @@ function viewCardForm(id = null) {
   };
   return `
     ${header(card ? '編輯卡片' : '新增卡片', { back: card ? `#/card/${id}` : '#/' })}
-    <form class="form" data-form="card" ${card ? `data-id="${id}"` : ''} novalidate>
+    <form class="form" data-form="card" data-draft="${card ? `card:edit:${id}` : 'card:new'}" ${card ? `data-id="${id}"` : ''} novalidate>
       <label>卡片名稱<input name="name" required maxlength="40" value="${esc(c.name)}" placeholder="例如：國泰 CUBE"></label>
       <div class="two">
         <label>發卡銀行<input name="bank" maxlength="40" value="${esc(c.bank)}" placeholder="選填"></label>
@@ -626,7 +705,9 @@ function viewAdd(query) {
       <section class="panel"><p>請先新增一張信用卡。</p><a class="btn primary block" href="#/card/new">新增卡片</a></section>`;
   }
   const type = RECORD_TYPES.some(([k]) => k === query.get('type')) ? query.get('type') : 'txn';
-  const cardId = Number(query.get('card')) || readPrefs().lastCardId || data.cards[0].id;
+  const explicitCard = Number(query.get('card')) || null;
+  const draftCard = Number(readDrafts()[`record:${type}`]?.values?.cardId) || null;
+  const cardId = explicitCard || draftCard || readPrefs().lastCardId || data.cards[0].id;
   const selected = cardById(cardId) ?? data.cards[0];
   const t = today();
 
@@ -648,6 +729,7 @@ function viewAdd(query) {
     fields = `
       <label>${type === 'refund' ? '退款金額' : '消費金額'}<input name="amount" inputmode="decimal" required autocomplete="off" placeholder="0"></label>
       <label>日期<input name="date" type="date" value="${t}" required></label>
+      <p class="hint cycle-hint" data-cycle-hint></p>
       <label>說明<input name="description" maxlength="60" placeholder="${type === 'refund' ? '例如：退貨' : '例如：晚餐'}"></label>
       ${
         type === 'txn'
@@ -670,6 +752,7 @@ function viewAdd(query) {
       <label>分期總金額<input name="amount" inputmode="decimal" required autocomplete="off" placeholder="0"></label>
       <label>期數<input name="periods" inputmode="numeric" required placeholder="例如 12"></label>
       <label>第一期入帳日<input name="date" type="date" value="${t}" required></label>
+      <p class="hint cycle-hint" data-cycle-hint></p>
       <label>說明<input name="description" maxlength="60" placeholder="例如：手機"></label>
       <p class="hint">每期取整數元，餘數併入第一期；之後每月同一天自動入帳一期。分期當期金額會全額計入最低應繳。</p>`;
   }
@@ -677,7 +760,9 @@ function viewAdd(query) {
   return `
     ${header('記一筆')}
     <nav class="segmented" aria-label="類型">${tabs}</nav>
-    <form class="form" data-form="record" data-type="${type}" novalidate>
+    <form class="form" data-form="record" data-type="${type}" data-draft="record:${type}" ${
+      explicitCard ? `data-draft-card="${explicitCard}"` : ''
+    } novalidate>
       ${cardSelect}
       ${fields}
       <button class="btn primary block" type="submit">儲存</button>
@@ -710,13 +795,14 @@ function viewStatementForm(cardId, closing) {
 
   return `
     ${header('銀行帳單金額', { back: `#/card/${cardId}`, sub: esc(cardLabel(card)) })}
-    <form class="form" data-form="statement" data-card="${cardId}" novalidate>
+    <form class="form" data-form="statement" data-card="${cardId}" data-draft="stmt:${cardId}:${closing}" novalidate>
       <label>結帳日<select name="closing" data-nav-stmt="${cardId}">${recent
         .map((d) => `<option value="${d}" ${d === closing ? 'selected' : ''}>${d}（繳款截止 ${dueDateFor(d, card.dueDay)}）</option>`)
         .join('')}</select></label>
       <label>本期應繳總額<input name="balance" inputmode="decimal" autocomplete="off" value="${override && override.balance !== null ? amountToInput(override.balance) : ''}" placeholder="試算：${computed ? money(computed.balance) : '$0'}"></label>
       <label>最低應繳金額<input name="minPayment" inputmode="decimal" autocomplete="off" value="${override && override.minPayment !== null ? amountToInput(override.minPayment) : ''}" placeholder="試算：${computed ? money(computed.minPayment) : '$0'}"></label>
-      <p class="hint">照銀行帳單填寫；留白的欄位會使用程式試算的數字。之後各期會以這期的金額為基礎接續計算。</p>
+      <p class="hint">照銀行帳單填寫；留白的欄位會使用程式試算的數字。之後各期會以這期的金額為基礎接續計算。<br>
+      這裡只填<strong>銀行已經寄來的帳單</strong>。結帳日之後的新消費請到「記一筆」記錄，不要填在這裡。</p>
       <button class="btn primary block" type="submit">儲存</button>
       ${override ? `<button class="btn block" type="button" data-action="clear-override" data-card="${cardId}" data-closing="${closing}">改回程式試算</button>` : ''}
     </form>`;
@@ -879,6 +965,11 @@ function render() {
     }
   }
   appEl.innerHTML = html;
+  for (const form of appEl.querySelectorAll('form[data-draft]')) restoreDraft(form);
+  for (const form of appEl.querySelectorAll('form')) {
+    updateSchedulePreview(form);
+    updateCycleHint(form);
+  }
   for (const a of navEl.querySelectorAll('a')) {
     if (a.dataset.tab === tab) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
@@ -1146,6 +1237,11 @@ const actions = {
     if (!window.confirm('確定要清除這支手機上的所有信用卡資料嗎？建議先匯出備份。')) return;
     if (!window.confirm('再確認一次：清除後無法復原。')) return;
     commit((d) => Object.assign(d, store.emptyData()), '已清除所有資料', '#/');
+    writeDrafts({});
+  },
+  'discard-draft'(el) {
+    clearDraft(el.dataset.key);
+    render();
   },
   'hide-install-hint'() {
     writePrefs({ hideInstallHint: true });
@@ -1180,27 +1276,83 @@ document.addEventListener('submit', (event) => {
   const form = event.target.closest('form[data-form]');
   if (!form || !forms[form.dataset.form]) return;
   event.preventDefault();
+  submittingDraftKey = form.dataset.draft || null;
   try {
     forms[form.dataset.form](new FormData(form), form);
   } catch (err) {
     toast(err.message, 'error');
+  } finally {
+    submittingDraftKey = null;
   }
 });
 
+function updateSchedulePreview(form) {
+  const preview = form.querySelector('#schedule-preview');
+  if (preview && form.statementDay && form.dueDay) {
+    preview.textContent = schedulePreview(Number(form.statementDay.value), Number(form.dueDay.value));
+  }
+}
+
+/** 「記一筆」日期下方即時顯示：這筆會算進哪一期帳單。 */
+function updateCycleHint(form) {
+  const hint = form.querySelector('[data-cycle-hint]');
+  if (!hint) return;
+  const card = cardById(Number(form.cardId?.value));
+  const date = form.date?.value;
+  if (!card || !isValidDate(date)) {
+    hint.textContent = '';
+    return;
+  }
+  const t = today();
+  const closing = closingOnOrAfter(date, card.statementDay);
+  const due = dueDateFor(closing, card.dueDay);
+  const what = form.dataset.type === 'installment' ? '第一期' : '這筆';
+  let text;
+  if (closing < t) {
+    text = `⚠ ${what}會算進已經結帳的 ${shortDate(closing)} 帳單（${shortDate(due)} 截止）。如果是結帳日之後才消費，請確認日期。`;
+  } else {
+    text = `${what}會算在 ${shortDate(closing)} 結帳的帳單，${shortDate(due)} 繳款截止。`;
+  }
+  if (date === closing) {
+    text += '結帳日當天的消費，銀行常會算到下一期；如果帳單上沒有這筆，請把日期改成隔天。';
+  }
+  hint.textContent = text;
+  hint.classList.toggle('warn', closing < t || date === closing);
+}
+
+function onFormEdit(event) {
+  const form = event.target.closest?.('form');
+  if (!form) return;
+  if (form.dataset.draft) saveDraft(form);
+  if (event.target.name === 'date' || event.target.name === 'cardId') updateCycleHint(form);
+}
+
+document.addEventListener('input', onFormEdit);
+
 document.addEventListener('change', (event) => {
+  onFormEdit(event);
   const el = event.target;
+  const form = el.closest('form');
   if (el.matches('[data-preview]')) {
-    const form = el.closest('form');
-    const preview = form.querySelector('#schedule-preview');
-    if (preview) {
-      preview.textContent = schedulePreview(Number(form.statementDay.value), Number(form.dueDay.value));
-    }
+    updateSchedulePreview(form);
   } else if (el.matches('[data-card-switch]')) {
-    // 繳款畫面需要依卡片更新「最低／全額」快捷按鈕
-    const type = el.closest('form').dataset.type;
-    if (type === 'payment') location.hash = `#/add?type=payment&card=${el.value}`;
+    if (form.dataset.type === 'payment') {
+      // 繳款畫面需要依卡片更新「最低／全額」快捷按鈕
+      location.hash = `#/add?type=payment&card=${el.value}`;
+    } else {
+      for (const a of appEl.querySelectorAll('.segmented a')) {
+        a.setAttribute('href', a.getAttribute('href').replace(/card=\d+/, `card=${el.value}`));
+      }
+    }
   } else if (el.matches('[data-nav-stmt]')) {
     location.hash = `#/stmt/${el.dataset.navStmt}/${el.value}`;
+  }
+});
+
+// 切到別的 App 前也存一次（保險）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    for (const form of appEl.querySelectorAll('form[data-draft]')) saveDraft(form);
   }
 });
 
