@@ -1035,6 +1035,29 @@ a.link {
   font-size: 0.8125rem;
 }
 
+.draft-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -4px 0 14px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: var(--butter-soft);
+  color: var(--butter-deep);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.cycle-hint:empty {
+  display: none;
+}
+
+.cycle-hint.warn {
+  color: var(--butter-deep);
+  font-weight: 600;
+}
+
 .sub-details {
   margin-bottom: 14px;
   font-size: 0.875rem;
